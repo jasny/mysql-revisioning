@@ -2,9 +2,6 @@
 
 /**
  * Class to generate revisioning tables and trigger for MySQL.
- * 
- * If you're using replication, disable it before running this script. Copy the DB after
- *  and start replication from there.
  */
 class MySQL_Revisioning
 {
@@ -26,12 +23,6 @@ class MySQL_Revisioning
 	 */
 	protected $signal;
 	
-	/**
-	 * SQL command to get revision id, UUID or UUID_SHORT.
-	 * @var string
-	 */
-	protected $uuid;
-	
 	
 	/**
 	 * Connect to database
@@ -42,7 +33,6 @@ class MySQL_Revisioning
 	{
 		$this->conn = $conn instanceof mysqli ? $conn : new mysqli($conn['host'], $conn['user'], $conn['password'], $conn['db']);
 		if (!isset($this->signal)) $this->signal = $this->conn->server_version >= 60000 ? 'SIGNAL %errno SET MESSAGE_TEXT="%errmsg"' : 'DO `%errmsg`';
-		if (!isset($this->uuid)) $this->uuid = $this->conn->server_version >= 50120 ? 'UUID_SHORT' : 'UUID';
 	}
 	
 	/**
@@ -71,13 +61,15 @@ class MySQL_Revisioning
 	{
 		$pk = '`' . join('`, `', $info['primarykey']) . '`';
 		$change_autoinc = $info['autoinc'] ? "CHANGE `{$info['autoinc']}` `{$info['autoinc']}` {$info['fieldtypes'][$info['autoinc']]}," : null;
-		$rev_type = $this->uuid == 'UUID_SHORT' ? "bigint unsigned" : 'varchar(128)';
+		
+		$unique_index = "";
+		foreach ($info['unique'] as $key=>$rows) $unique_index .= ", DROP INDEX `$key`, ADD INDEX `$key` ($rows)";
 		
 		$sql = <<<SQL
 ALTER TABLE `_revision_$table`
   $change_autoinc
   DROP PRIMARY KEY,
-  ADD `_revision` $rev_type,
+  ADD `_revision` bigint unsigned AUTO_INCREMENT,
   ADD `_revision_previous` bigint unsigned NULL,
   ADD `_revision_action` enum('INSERT','UPDATE') default NULL,
   ADD `_revision_user_id` int(10) unsigned NULL,
@@ -86,11 +78,49 @@ ALTER TABLE `_revision_$table`
   ADD PRIMARY KEY (`_revision`),
   ADD INDEX (`_revision_previous`),
   ADD INDEX `org_primary` ($pk)
+  $unique_index
 SQL;
 
   		$this->query("CREATE TABLE `_revision_$table` LIKE `$table`");
   		$this->query($sql);
-        $this->query("INSERT INTO `_revision_$table` SELECT *, {$this->uuid}(), NULL, 'INSERT', NULL, NOW(), 'Revisioning initialisation' FROM `$table`");
+        $this->query("INSERT INTO `_revision_$table` SELECT *, NULL, NULL, 'INSERT', NULL, NOW(), 'Revisioning initialisation' FROM `$table`");
+	}
+
+	/**
+	 * Create a revision table based to original table.
+	 * 
+	 * @param string $table
+	 * @param array  $info   Table information
+	 */	
+	protected function createRevisionChildTable($table, $info)
+	{
+		if (!empty($info['primarykey'])) $pk = '`' . join('`, `', $info['primarykey']) . '`';
+		$change_autoinc = !empty($info['autoinc']) ? "CHANGE `{$info['autoinc']}` `{$info['autoinc']}` {$info['fieldtypes'][$info['autoinc']]}," : null;
+		
+		$unique_index = "";
+		foreach ($info['unique'] as $key=>$rows) $unique_index .= "DROP INDEX `$key`, ADD INDEX `$key` ($rows),";
+		
+		if (isset($pk)) $sql = <<<SQL
+ALTER TABLE `_revision_$table`
+  $change_autoinc
+  DROP PRIMARY KEY,
+  ADD `_revision` bigint unsigned,
+  ADD PRIMARY KEY (`_revision`, $pk),
+  ADD INDEX `org_primary` ($pk),
+  $unique_index
+  COMMENT = "Child of `_revision_{$info['parent']}`" 
+SQL;
+		else $sql = <<<SQL
+ALTER TABLE `_revision_$table`
+  ADD `_revision` bigint unsigned,
+  ADD INDEX `_revision` (`_revision`),
+  $unique_index
+  COMMENT = "Child of `_revision_{$info['parent']}`"
+SQL;
+		
+  		$this->query("CREATE TABLE `_revision_$table` LIKE `$table`");
+  		$this->query($sql);
+        $this->query("INSERT INTO `_revision_$table` SELECT `t`.*, `p`.`_revision` FROM `$table` AS `t` INNER JOIN `{$info['parent']}` AS `p` ON `t`.`{$info['foreign_key']}`=`p`.`{$info['parent_key']}`");
 	}
 
 	/**
@@ -103,11 +133,10 @@ SQL;
 	{
 		foreach ($info['primarykey'] as $field) $pk_join[] = "`t`.`$field` = `r`.`$field`";
 		$pk_join = join(' AND ', $pk_join);
-		$rev_type = $this->uuid == 'UUID_SHORT' ? "bigint unsigned" : 'varchar(128)';
 
 		$sql = <<<SQL
 ALTER TABLE `$table`
-  ADD `_revision` $rev_type NULL,
+  ADD `_revision` bigint unsigned NULL,
   ADD `_revision_comment` text NULL,
   ADD UNIQUE INDEX (`_revision`)
 SQL;
@@ -127,12 +156,11 @@ SQL;
 		$pk = '`' . join('`, `', $info['primarykey']) . '`';
 		foreach ($info['primarykey'] as $field) $pk_type[] = "`$field` {$info['fieldtypes'][$field]}";
 		$pk_type = join(',', $pk_type);
-		$rev_type = $this->uuid == 'UUID_SHORT' ? "bigint unsigned" : 'varchar(128)';
 		
 		$sql = <<<SQL
 CREATE TABLE `_revhistory_$table` (
   $pk_type,
-  `_revision` $rev_type NULL,
+  `_revision` bigint unsigned NULL,
   `_revhistory_user_id` int(10) unsigned NULL,
   `_revhistory_timestamp` timestamp NOT NULL default CURRENT_TIMESTAMP,
   INDEX ($pk),
@@ -173,8 +201,8 @@ CREATE TRIGGER `$table-beforeinsert` BEFORE INSERT ON `$table`
     DECLARE revisionCursor CURSOR FOR SELECT $fields FROM `_revision_$table` WHERE `_revision`=`var-_revision` LIMIT 1;
   
     IF NEW.`_revision` IS NULL THEN
-      SET NEW.`_revision` = {$this->uuid}();
-      INSERT INTO `_revision_$table` (`_revision`, `_revision_comment`, `_revision_user_id`, `_revision_timestamp`) VALUES (NEW.`_revision`, NEW.`_revision_comment`, @auth_uid, NOW());
+      INSERT INTO `_revision_$table` (`_revision_comment`, `_revision_user_id`, `_revision_timestamp`) VALUES (NEW.`_revision_comment`, @auth_uid, NOW());
+	  SET NEW.`_revision` = LAST_INSERT_ID(); 
     ELSE
       SET `var-_revision`=NEW.`_revision`;
       OPEN revisionCursor;
@@ -242,8 +270,8 @@ CREATE TRIGGER `$table-beforeupdate` BEFORE UPDATE ON `$table`
     END IF;
 
     IF NEW.`_revision` IS NULL THEN
-      SET NEW.`_revision` = UUID_SHORT();
-      INSERT INTO `_revision_$table` (`_revision`, `_revision_previous`, `_revision_comment`, `_revision_user_id`, `_revision_timestamp`) VALUES (NEW.`_revision`, OLD.`_revision`, NEW.`_revision_comment`, @auth_uid, NOW());
+      INSERT INTO `_revision_$table` (`_revision_previous`, `_revision_comment`, `_revision_user_id`, `_revision_timestamp`) VALUES (OLD.`_revision`, NEW.`_revision_comment`, @auth_uid, NOW());
+      SET NEW.`_revision` = LAST_INSERT_ID();
     END IF;
     
     SET NEW.`_revision_comment` = NULL;
@@ -374,40 +402,6 @@ SQL;
 	
 
 	/**
-	 * Create a revision table based to original table.
-	 * 
-	 * @param string $table
-	 * @param array  $info   Table information
-	 */	
-	protected function createRevisionChildTable($table, $info)
-	{
-		if (!empty($info['primarykey'])) $pk = '`' . join('`, `', $info['primarykey']) . '`';
-		$change_autoinc = !empty($info['autoinc']) ? "CHANGE `{$info['autoinc']}` `{$info['autoinc']}` {$info['fieldtypes'][$info['autoinc']]}," : null;
-		$rev_type = $this->uuid == 'UUID_SHORT' ? "bigint unsigned" : 'varchar(128)';
-		
-		if (isset($pk)) $sql = <<<SQL
-ALTER TABLE `_revision_$table`
-  $change_autoinc
-  DROP PRIMARY KEY,
-  ADD `_revision` $rev_type,
-  ADD PRIMARY KEY (`_revision`, $pk),
-  ADD INDEX `org_primary` ($pk),
-  COMMENT = "Child of `_revision_{$info['parent']}`"  
-SQL;
-		else $sql = <<<SQL
-ALTER TABLE `_revision_$table`
-  $change_autoinc
-  ADD `_revision` $rev_type,
-  ADD INDEX `_revision` (`_revision`),
-  COMMENT = "Child of `_revision_{$info['parent']}`"  
-SQL;
-		
-  		$this->query("CREATE TABLE `_revision_$table` LIKE `$table`");
-  		$this->query($sql);
-        $this->query("INSERT INTO `_revision_$table` SELECT `t`.*, `p`.`_revision` FROM `$table` AS `t` INNER JOIN `{$info['parent']}` AS `p` ON `t`.`{$info['foreign_key']}`=`p`.`{$info['parent_key']}`");
-	}
-
-	/**
 	 * Create after insert/update trigger.
 	 * 
 	 * @param string $table
@@ -469,11 +463,11 @@ SQL;
 	{
 		if (!empty($info['primarykey'])) {
 			foreach ($info['primarykey'] as $field) $fields_is_old[] = "`r`.`$field` = OLD.`$field`";
-			$delete = "DELETE `r`.* FROM `_revision_$table` AS `r` INNER JOIN `{$info['parent']}` AS `p` ON `r`.`{$info['parent_key']}` = `p`.`{$info['foreign_key']}` WHERE " . join(' AND ', $fields_is_old) . ";";
+			$delete = "DELETE `r`.* FROM `_revision_$table` AS `r` INNER JOIN `{$info['parent']}` AS `p` ON `r`.`_revision` = `p`.`_revision` WHERE " . join(' AND ', $fields_is_old) . ";";
 		
 		} else {
 			foreach ($info['fieldnames'] as $field) $fields_is_old[] = "`$field` = OLD.`$field`";
-			$delete = "DELETE FROM `_revision_$table` WHERE `_revision` IN (SELECT `_revision` FROM `{$info['parent']}` WHERE `{$info['parent_key']}` = OLD.`{$info['foreign_key']}`) AND " . join(' AND ', $fields_is_old) . ";";
+			$delete = "DELETE FROM `_revision_$table` WHERE `_revision` IN (SELECT `_revision` FROM `{$info['parent']}` WHERE `{$info['parent_key']}` = OLD.`{$info['foreign_key']}`) AND " . join(' AND ', $fields_is_old) . " LIMIT 1;";
 		}
 
 		$sql = <<<SQL
@@ -509,7 +503,7 @@ SQL;
 			
 			// Prepare
 			foreach ($matches[0] as $i=>$table) {
-				$info = array('parent'=>$i > 0 ? $matches[0][0] : null);
+				$info = array('parent'=>$i > 0 ? $matches[0][0] : null, 'unique'=>array());
 				$result = $this->query("DESCRIBE `$table`;");
 				
 				while ($field = $result->fetch_assoc()) {
@@ -523,6 +517,9 @@ SQL;
 					if (preg_match('/\bauto_increment\b/i', $field['Extra'])) $info['autoinc'] = $field['Field'];
 					$info['fieldtypes'][$field['Field']] = $field['Type'];
 				}
+				
+				$result = $this->query("SELECT c.CONSTRAINT_NAME, GROUP_CONCAT(CONCAT('`', k.COLUMN_NAME, '`')) AS cols FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS `c` INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS `k` ON c.TABLE_SCHEMA=k.TABLE_SCHEMA AND c.TABLE_NAME=k.TABLE_NAME AND c.CONSTRAINT_NAME=k.CONSTRAINT_NAME WHERE c.TABLE_SCHEMA=DATABASE() AND c.TABLE_NAME='$table' AND c.CONSTRAINT_TYPE='UNIQUE' AND c.CONSTRAINT_NAME != '_revision' GROUP BY c.CONSTRAINT_NAME");
+				while ($key = $result->fetch_row()) $info['unique'][$key[0]] = $key[1];
 				
 				if (empty($info['parent'])) {
 					if (empty($info['primarykey'])) {
@@ -624,7 +621,6 @@ Options:
   --db=DATABASE    MySQL database
 
   --signal=CMD     SQL command to signal an error
-  --uuid=CMD       SQL command to get revision id; UUID or UUID_SHORT
 
 MESSAGE;
 	}
