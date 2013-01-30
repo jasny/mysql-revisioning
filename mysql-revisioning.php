@@ -60,7 +60,7 @@ class MySQL_Revisioning
 	protected function createRevisionTable($table, $info)
 	{
 		$pk = '`' . join('`, `', $info['primarykey']) . '`';
-		$change_autoinc = $info['autoinc'] ? "CHANGE `{$info['autoinc']}` `{$info['autoinc']}` {$info['fieldtypes'][$info['autoinc']]}," : null;
+		$change_autoinc = !empty($info['autoinc']) ? "CHANGE `{$info['autoinc']}` `{$info['autoinc']}` {$info['fieldtypes'][$info['autoinc']]}," : null;
 		
 		$unique_index = "";
 		foreach ($info['unique'] as $key=>$rows) $unique_index .= ", DROP INDEX `$key`, ADD INDEX `$key` ($rows)";
@@ -83,7 +83,7 @@ SQL;
 
   		$this->query("CREATE TABLE `_revision_$table` LIKE `$table`");
   		$this->query($sql);
-        $this->query("INSERT INTO `_revision_$table` SELECT *, NULL, NULL, 'INSERT', NULL, NOW(), 'Revisioning initialisation' FROM `$table`");
+  		$this->query("INSERT INTO `_revision_$table` SELECT *, NULL, NULL, 'INSERT', NULL, NOW(), 'Revisioning initialisation' FROM `$table`");
 	}
 
 	/**
@@ -120,7 +120,7 @@ SQL;
 		
   		$this->query("CREATE TABLE `_revision_$table` LIKE `$table`");
   		$this->query($sql);
-        $this->query("INSERT INTO `_revision_$table` SELECT `t`.*, `p`.`_revision` FROM `$table` AS `t` INNER JOIN `{$info['parent']}` AS `p` ON `t`.`{$info['foreign_key']}`=`p`.`{$info['parent_key']}`");
+ 		$this->query("INSERT INTO `_revision_$table` SELECT `t`.*, `p`.`_revision` FROM `$table` AS `t` INNER JOIN `{$info['parent']}` AS `p` ON `t`.`{$info['foreign_key']}`=`p`.`{$info['parent_key']}`");
 	}
 
 	/**
@@ -142,7 +142,7 @@ ALTER TABLE `$table`
 SQL;
 
 		$this->query($sql);
-        $this->query("UPDATE `$table` AS `t` INNER JOIN `_revision_$table` AS `r` ON $pk_join SET `t`.`_revision` = `r`.`_revision`");
+  		$this->query("UPDATE `$table` AS `t` INNER JOIN `_revision_$table` AS `r` ON $pk_join SET `t`.`_revision` = `r`.`_revision`");
 	}
 	
 	/**
@@ -216,7 +216,7 @@ CREATE TRIGGER `$table-beforeinsert` BEFORE INSERT ON `$table`
   END
 SQL;
 		
-       	$this->query("DROP TRIGGER IF EXISTS `$table-beforeinsert`");
+  		$this->query("DROP TRIGGER IF EXISTS `$table-beforeinsert`");
 		$this->query($sql);
 	}
 	
