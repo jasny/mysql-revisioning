@@ -636,7 +636,7 @@ MESSAGE;
 				
 		for ($i=1; $i < $_SERVER['argc']; $i++) {
 			if (strncmp($_SERVER['argv'][$i], '--', 2) == 0) {
-				list($key, $value) = split("=", substr($_SERVER['argv'][$i], 2), 2) + array(1=>null);
+				list($key, $value) = explode("=", substr($_SERVER['argv'][$i], 2), 2) + array(1=>null);
 				
 				if (property_exists($this, $key)) $this->$key = isset($value) ? $value : true;
 				  elseif (!isset($value)) $cmd = $key;
