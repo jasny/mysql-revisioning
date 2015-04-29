@@ -32,7 +32,7 @@ class MySQL_Revisioning
 	public function connect($conn)
 	{
 		$this->conn = $conn instanceof mysqli ? $conn : new mysqli($conn['host'], $conn['user'], $conn['password'], $conn['db']);
-		if (!isset($this->signal)) $this->signal = $this->conn->server_version >= 60000 ? 'SIGNAL %errno SET MESSAGE_TEXT="%errmsg"' : 'DO `%errmsg`';
+		if (!isset($this->signal)) $this->signal = $this->conn->server_version >= 60000 ? 'SIGNAL SQLSTATE \'%errno\' SET MESSAGE_TEXT="%errmsg"' : 'DO `%errmsg`';
 	}
 	
 	/**
