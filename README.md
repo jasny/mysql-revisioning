@@ -37,9 +37,13 @@ ALTER TABLE `mytable`
   ADD `_revision` bigint unsigned NULL,
   ADD `_revision_comment` text NULL,
   ADD UNIQUE INDEX (`_revision`);
-The history table
-Saving each version is not enough. Since we can revert back to older revisions and of course delete the record altogether, we want to store which version of the record was enabled at what time. The history table only needs to hold the revision number and a timestamp. We’ll add the primary key fields, so it’s easier to query. A user id field is included again to blame.
+```
 
+### The history table
+
+Saving each version is not enough. Since we can revert back to older revisions and of course delete the record altogether, we want to store which version of the record was enabled at what time. The history table only needs to hold the revision number and a timestamp. We’ll add the primary key fields, so it’s easier to query. A user id field is included to blame.
+
+```
 CREATE TABLE `_revhistory_mytable` (
   `id` int(10) unsigned,
   `_revision` bigint unsigned NULL,
@@ -177,9 +181,9 @@ CREATE TRIGGER `mytable-afterdelete` AFTER DELETE ON `mytable`
 ## Multi-table records
 often the data of a record is spread across multiple tables, like an invoice with multiple invoice lines. Having each invoice line versioned individually isn’t really useful. Instead we want a new revision of the whole invoice on each change.
 
-Ideally a change of one or more parts of the invoice would be changed, a new revision would be created. There are several issues in actually creating this those. Detecting the change of multiple parts of the invoice at once, generating a single revision, would mean we need to know if the actions are done within the same transaction. Unfortunately there is a connection_id(), but no transaction_id() function in MySQL. Also, the query would fail when a query inserts or updates a record in the child table, using the parent table. We need to come up with something else.
+Ideally a change of one or more parts of the invoice would be changed, a new revision would be created. There are several issues in actually creating this those. Detecting the change of multiple parts of the invoice at once, generating a single revision, would mean we need to know if the actions are done within the same transaction. Unfortunately there is a connection\_id(), but no transaction\_id() function in MySQL. Also, the query would fail when a query inserts or updates a record in the child table, using the parent table. We need to come up with something else.
 
-In the implementation we currently have in production, we version the rows in the parent as well in the child tables. For each version of the parent row, we register which versions of the child rows ware set. This however has really complicated the trigger code and tends to need a lot of checking an querying slowing the write process down. Since nobody ever looks at the versions of the child rows, the application forces a new version of the parent row. The benefits of versioning both are therefor minimal.
+One solution is to version the rows in the parent as well in the child tables. For each version of the parent row, we register which versions of the child rows ware set. This however has really complicated the trigger code and tends to need a lot of checking an querying slowing the write process down. Since nobody ever looks at the versions of the child rows, the application forces a new version of the parent row. The benefits of versioning both are therefor minimal.
 
 ### Only versioning the parent
 For this new (simplified) implementation, we will only have one revision number across all tables of the record. Changing data from the parent table, will trigger a new version. This will not only copy the parent row to the revisioning table, but also the rows of the children.
@@ -213,7 +217,8 @@ CREATE TABLE `mychild` (
 
 Note that we are using InnoDB tables here. MyISAM doesn’t have foreign key constraints, therefor it’s not possible to define a parent-child relationship.
 
-Insert, update and delete
+### Insert, update and delete
+
 In the parent trigger, two different things happen concerning the child rows. When a new version is created, the data of `mychild` is copied to the revisioning table. On a revision switch, data will be copied from the revisioning table into `mychild`. The “`_revision_action` IS NULL” condition, means that `_revision_mytable` is only updated when a new revision is created.
 
 ```
@@ -292,7 +297,6 @@ The revisioning table has multiple versions of a record. Unique indexes from the
 SELECT c.CONSTRAINT_NAME, GROUP_CONCAT(CONCAT('`', k.COLUMN_NAME, '`')) AS cols FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS `c` INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS `k` ON c.TABLE_SCHEMA=k.TABLE_SCHEMA AND c.TABLE_NAME=k.TABLE_NAME AND c.CONSTRAINT_NAME=k.CONSTRAINT_NAME WHERE c.TABLE_SCHEMA=DATABASE() AND c.TABLE_NAME='mytable' AND c.CONSTRAINT_TYPE='UNIQUE' AND c.CONSTRAINT_NAME != '_revision' GROUP BY c.CONSTRAINT_NAME
 ```
 
-### Revisioning and replication
-[Baron Schwartz](https://twitter.com/xaprb) pointed out some possible issues with implementing versioning in MySQL. One of which is a race condition when relying on auto-increment keys in triggers with replication. Actions carried out through triggers on a master are not replicated to a slave server. Instead, triggers on the slave will be invoked, which should do the same action as on the master.
+## Revisioning and replication
 
-It probably isn’t needed to have a copy of the revisioning tables on the slave. This would mean that we could simply omit the triggers. Unfortunately this causes problems when changing the revision. In that case we are forced to move switching of a revision out of the database. Instead the application needs to select the data from all revisioning tables and write that to the original tables.
+Revisioning using triggers, will only work with [row-based replication](https://dev.mysql.com/doc/refman/5.1/en/replication-sbr-rbr.html). On systems with statement-based replication, there is be a race condition when relying on auto-increment keys in triggers.
