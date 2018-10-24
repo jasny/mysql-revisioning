@@ -1,7 +1,7 @@
 # Versioning MySQL data
 As a developer you’re probably using a versioning control system, like subversion or git, to safeguard your data. Advantages of using a VCS are that you can walk to the individual changes for a document, see who made each change and revert back to specific revision if needed. These are features which would also be nice for data stored in a database. With the use of triggers we can implement versioning for data stored in a MySQL db.
 
-**BEWARE! This is a prove of concept project. Be very careful when using this in a production environment.**
+### BEWARE! This is a prove of concept. Do not use this in a production environment.
 
 ## How it works
 
